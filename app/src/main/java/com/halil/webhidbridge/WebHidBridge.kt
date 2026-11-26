@@ -367,19 +367,49 @@ private fun openInternal(device: UsbDevice) {
         return JSONObject()
     }
 
-    private fun receiveFeatureReport(args: JSONObject): JSONObject {
-        val id = args.getString("deviceId")
-        val reportId = args.getInt("reportId")
-        val opened = openDevices[id] ?: throw IllegalStateException("Cihaz açık değil: $id")
+    
+private fun receiveFeatureReport(args: JSONObject): JSONObject {
+    val id = args.getString("deviceId")
+    val reportId = args.getInt("reportId")
+    val opened = openDevices[id]
+        ?: throw IllegalStateException("Device is not open: $id")
 
-        val requestType = 0xA1 // Device-to-host | Class | Interface
-        val value = (FEATURE shl 8) or (reportId and 0xFF)
-        val buffer = ByteArray(64)
-        val n = opened.connection.controlTransfer(
-            requestType, HID_GET_REPORT, value, opened.iface.id, buffer, buffer.size, TIMEOUT_MS
+    val requestType = 0xA1
+    val value = (FEATURE shl 8) or (reportId and 0xFF)
+
+    // Larger response buffer for testing the MX302 receiver.
+    val buffer = ByteArray(256)
+
+    android.util.Log.d(
+        "HidBridge",
+        "GET_REPORT: reportId=$reportId interface=${opened.iface.id}"
+    )
+
+    val n = opened.connection.controlTransfer(
+        requestType,
+        HID_GET_REPORT,
+        value,
+        opened.iface.id,
+        buffer,
+        buffer.size,
+        TIMEOUT_MS
+    )
+
+    android.util.Log.d(
+        "HidBridge",
+        "GET_REPORT result: bytes=$n reportId=$reportId"
+    )
+
+    if (n < 0) {
+        throw IllegalStateException(
+            "GET_REPORT failed: reportId=$reportId, interface=${opened.iface.id}, result=$n"
         )
-        if (n < 0) throw IllegalStateException("GET_REPORT başarısız (reportId=$reportId)")
-        val trimmed = buffer.copyOfRange(0, n)
-        return JSONObject().put("data", Base64.encodeToString(trimmed, Base64.NO_WRAP))
     }
+
+    val trimmed = buffer.copyOfRange(0, n)
+
+    return JSONObject().put(
+        "data",
+        Base64.encodeToString(trimmed, Base64.NO_WRAP)
+    )
 }
