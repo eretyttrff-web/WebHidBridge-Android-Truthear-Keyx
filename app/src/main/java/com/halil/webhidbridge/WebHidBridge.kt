@@ -200,54 +200,96 @@ class WebHidBridge(private val activity: Activity, private val webView: WebView)
         usbManager.deviceList[id] ?: openDevices[id]?.device
         ?: throw IllegalStateException("Cihaz artık bağlı değil: $id")
 
-    private fun openInternal(device: UsbDevice) {
-        if (openDevices.containsKey(device.deviceName)) return
+   
+private fun openInternal(device: UsbDevice) {
+    if (openDevices.containsKey(device.deviceName)) return
 
-        // Prefer an HID-class interface; fall back to interface 0.
-        var chosen: UsbInterface? = null
+    var chosen: UsbInterface? = null
+
+    // Prefer vendor-defined HID interface with both IN and OUT endpoints.
+    for (i in 0 until device.interfaceCount) {
+        val candidate = device.getInterface(i)
+
+        if (candidate.interfaceClass != UsbConstants.USB_CLASS_HID) continue
+        if (candidate.interfaceSubclass != 0 || candidate.interfaceProtocol != 0) continue
+
+        var hasIn = false
+        var hasOut = false
+
+        for (j in 0 until candidate.endpointCount) {
+            val ep = candidate.getEndpoint(j)
+
+            if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT) {
+                if (ep.direction == UsbConstants.USB_DIR_IN) hasIn = true
+                if (ep.direction == UsbConstants.USB_DIR_OUT) hasOut = true
+            }
+        }
+
+        if (hasIn && hasOut) {
+            chosen = candidate
+            break
+        }
+    }
+
+    if (chosen == null) {
         for (i in 0 until device.interfaceCount) {
-            val iface = device.getInterface(i)
-            if (iface.interfaceClass == UsbConstants.USB_CLASS_HID) {
-                chosen = iface
+            val candidate = device.getInterface(i)
+            if (candidate.interfaceClass == UsbConstants.USB_CLASS_HID) {
+                chosen = candidate
                 break
             }
         }
-        val iface = chosen ?: device.getInterface(0)
-
-        val connection = usbManager.openDevice(device)
-            ?: throw IllegalStateException("Cihaz açılamadı (openDevice null döndü)")
-        if (!connection.claimInterface(iface, true)) {
-            throw IllegalStateException("USB arayüzü claim edilemedi")
-        }
-
-        var epIn: UsbEndpoint? = null
-        var epOut: UsbEndpoint? = null
-        for (i in 0 until iface.endpointCount) {
-            val ep = iface.getEndpoint(i)
-            if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT) {
-                if (ep.direction == UsbConstants.USB_DIR_IN) epIn = ep
-                else epOut = ep
-            }
-        }
-
-        val opened = OpenDevice(device, connection, iface, epIn, epOut)
-
-        try {
-            val raw = HidDescriptor.fetchRaw(connection, iface)
-            if (raw != null) {
-                opened.collections = HidDescriptor.parse(raw)
-                android.util.Log.d("HidBridge", "Report descriptor parsed: ${opened.collections.length()} top-level collection(s), raw=${raw.size} bytes")
-            } else {
-                android.util.Log.d("HidBridge", "Report descriptor GET_DESCRIPTOR returned nothing")
-            }
-        } catch (e: Exception) {
-            android.util.Log.d("HidBridge", "Report descriptor fetch/parse failed: ${e.message}")
-        }
-
-        openDevices[device.deviceName] = opened
-
-        if (epIn != null) startInputReportLoop(device.deviceName, opened, epIn)
     }
+
+    val iface = chosen ?: device.getInterface(0)
+
+    val connection = usbManager.openDevice(device)
+        ?: throw IllegalStateException("USB device could not be opened")
+
+    if (!connection.claimInterface(iface, true)) {
+        connection.close()
+        throw IllegalStateException("USB interface could not be claimed")
+    }
+
+    var epIn: UsbEndpoint? = null
+    var epOut: UsbEndpoint? = null
+
+    for (i in 0 until iface.endpointCount) {
+        val ep = iface.getEndpoint(i)
+
+        if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT) {
+            if (ep.direction == UsbConstants.USB_DIR_IN) epIn = ep
+            else if (ep.direction == UsbConstants.USB_DIR_OUT) epOut = ep
+        }
+    }
+
+    android.util.Log.d(
+        "HidBridge",
+        "Selected interface ${iface.id}, subclass=${iface.interfaceSubclass}, protocol=${iface.interfaceProtocol}"
+    )
+
+    val opened = OpenDevice(device, connection, iface, epIn, epOut)
+
+    try {
+        val raw = HidDescriptor.fetchRaw(connection, iface)
+
+        if (raw != null) {
+            opened.collections = HidDescriptor.parse(raw)
+            android.util.Log.d(
+                "HidBridge",
+                "Report descriptor parsed: ${opened.collections.length()} top-level collection(s), raw=${raw.size} bytes"
+            )
+        }
+    } catch (e: Exception) {
+        android.util.Log.d("HidBridge", "Report descriptor fetch/parse failed: ${e.message}")
+    }
+
+    openDevices[device.deviceName] = opened
+
+    if (epIn != null) {
+        startInputReportLoop(device.deviceName, opened, epIn)
+    }
+}
 
     private fun openDevice(args: JSONObject): JSONObject {
         val id = args.getString("deviceId")
