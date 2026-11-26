@@ -413,3 +413,4 @@ private fun receiveFeatureReport(args: JSONObject): JSONObject {
         Base64.encodeToString(trimmed, Base64.NO_WRAP)
     )
 }
+}
